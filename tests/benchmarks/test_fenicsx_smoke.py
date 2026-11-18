@@ -1,6 +1,6 @@
-from mpi4py import MPI
-from dolfinx import mesh
 import numpy as np
+from dolfinx import mesh
+from mpi4py import MPI
 
 
 def test_fenicsx_mesh():
