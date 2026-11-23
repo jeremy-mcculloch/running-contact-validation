@@ -155,7 +155,14 @@ A safe initial implementation sequence is: a single deformable bar/beam with kno
 
 ## 12. Decision protocol
 
-Every substantive modeling choice receives an entry in `docs/decisions.md`: decision ID, date, scientific motivation, alternatives considered, chosen assumption, expected effect on predictions, tests required, and approval status. Coding agents may implement approved decisions, but must flag unresolved choices rather than silently selecting physically consequential defaults.
+This scientific specification is the sole authoritative source for approved scientific and modeling decisions.
+
+- Record substantive modeling decisions directly in this document, including their rationale, assumptions, verification requirements, and approval status.
+- Use Git commits and pull requests to preserve the history of changes. Do not maintain a separate `docs/decisions.md`.
+- Later explicitly approved decisions supersede earlier provisional recommendations.
+- Coding agents may propose changes through pull requests but must obtain explicit human approval before treating proposed scientific decisions as approved.
+- Unresolved scientific choices must remain clearly identified rather than silently resolved during implementation.
+- If two approved decisions conflict, request clarification before implementing the affected functionality.
 
 ## 13. Approval status
 
