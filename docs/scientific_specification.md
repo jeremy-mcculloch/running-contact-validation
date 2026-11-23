@@ -357,7 +357,7 @@ The beam represents the **entire carbon plate**, with sectional axial rigidity `
 
 ### 16.6 Approval and coding-agent scope
 
-Coding agents **may** implement variable-width FE quadrature, linear-elastic plane-stress and plane-strain benchmarks, whole-plate linear beam benchmarks, and the associated dimensional and conservation tests. They **must not** silently choose a production nonlinear constitutive reduction, infer effective width from held-out GRFs, change whole-plate properties into per-width values, or claim the 2D model captures lateral mechanics. Record all future decisions with ID, rationale, independent parameter source, and approval in `docs/decisions.md`.
+Coding agents **may** implement variable-width FE quadrature, linear-elastic plane-stress and plane-strain benchmarks, whole-plate linear beam benchmarks, and the associated dimensional and conservation tests. They **must not** silently choose a production nonlinear constitutive reduction, infer effective width from held-out GRFs, change whole-plate properties into per-width values, or claim the 2D model captures lateral mechanics. Record future scientific decisions in accordance with the decision protocol in Section 12.
 
 
 ## 17. Measured midsole width and bonded plate–foam interface — decision update (draft 0.7)
