@@ -25,11 +25,11 @@ def test_package_importable_in_container():
 
 
 def test_fenicsx_mesh():
-    n = 8
+    width = 8
     domain = mesh.create_unit_square(
         MPI.COMM_WORLD,
-        n,
-        n,
+        width,
+        width,
         cell_type=mesh.CellType.triangle,
     )
 
@@ -39,10 +39,11 @@ def test_fenicsx_mesh():
     coordinates = domain.geometry.x
     assert np.all(np.isfinite(coordinates))
 
-    # Global counts are partition-independent: 2*n*n triangles, (n+1)^2 vertices.
+    # Global counts are partition-independent:
+    # 2*width*width triangles and (width+1)^2 vertices.
     tdim = domain.topology.dim
     domain.topology.create_entities(0)
     num_cells = domain.topology.index_map(tdim).size_global
     num_vertices = domain.topology.index_map(0).size_global
-    assert num_cells == 2 * n * n
-    assert num_vertices == (n + 1) ** 2
+    assert num_cells == 2 * width * width
+    assert num_vertices == (width + 1) ** 2
