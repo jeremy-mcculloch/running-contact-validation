@@ -11,16 +11,18 @@ arithmetic so the same :meth:`WidthProfile.__call__` also accepts a UFL
 expression for ``X`` (e.g. ``ufl.SpatialCoordinate(mesh)[0]`` on an
 undeformed reference mesh).
 
-Scope note: the production ``b(X)`` comes from measured midsole width
-(approved, D21e), but the numerical interpolation rule for measured stations
-is not yet selected (Section 17.2, 24.6/R8). Only analytic constant and linear
-profiles are provided here; they are verification benchmarks, not a selected
-measured-width interpolant.
+Profiles: :class:`ConstantWidth` and :class:`LinearWidth` are analytic
+verification benchmarks. :class:`PiecewiseLinearWidth` linearly interpolates
+measured midsole-width stations (D21e), optionally read from CSV; linear
+interpolation was requested by the researcher in PR #9 review. No
+extrapolation beyond the measured stations is performed (Section 17.2).
 """
 
 from __future__ import annotations
 
+import csv
 import math
+import os
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -30,6 +32,7 @@ import numpy.typing as npt
 __all__ = [
     "ConstantWidth",
     "LinearWidth",
+    "PiecewiseLinearWidth",
     "WidthProfile",
     "check_width_values",
 ]
@@ -124,6 +127,101 @@ class LinearWidth(WidthProfile):
 
     def _formula(self, X: Any) -> Any:
         return self.b0 + self.slope * (X - self.X0)
+
+
+class PiecewiseLinearWidth(WidthProfile):
+    """Width linearly interpolated between stations ``(X_i, b_i)``.
+
+    ``b(X)`` is the continuous piecewise-linear interpolant of the stations,
+    so it reproduces every station value exactly. Stations must be strictly
+    increasing in ``X`` and every ``b_i`` positive, which guarantees ``b > 0``
+    on ``[X_0, X_n]``. Evaluation outside ``[X_0, X_n]`` is rejected: no
+    extrapolation rule is defined (Section 17.2).
+
+    The interpolant has slope discontinuities at interior stations. A
+    width-weighted integral is integrated exactly by polynomial quadrature
+    only when element edges coincide with the stations; otherwise the
+    quadrature error vanishes with mesh refinement.
+
+    For UFL ``X`` the interpolant is written in ramp form,
+    ``b(X) = b_0 + s_0 (X - X_0) + sum_{i=1}^{n-1} (s_i - s_{i-1}) max(X - X_i, 0)``,
+    with segment slopes ``s_i``; for arrays ``numpy.interp`` is used.
+    """
+
+    def __init__(self, X: npt.ArrayLike, b: npt.ArrayLike) -> None:
+        Xs = np.asarray(X, dtype=np.float64).reshape(-1)
+        bs = np.asarray(b, dtype=np.float64).reshape(-1)
+        if Xs.shape != bs.shape:
+            raise ValueError("station positions X and widths b must have equal length")
+        if Xs.size < 2:
+            raise ValueError("PiecewiseLinearWidth requires at least two stations")
+        if not np.all(np.isfinite(Xs)):
+            raise ValueError("station positions X must be finite")
+        if not np.all(np.diff(Xs) > 0.0):
+            raise ValueError("station positions X must be strictly increasing")
+        check_width_values(bs)
+        self.X_stations = Xs
+        self.b_stations = bs
+        self.slopes = np.diff(bs) / np.diff(Xs)
+
+    @classmethod
+    def from_csv(
+        cls,
+        path: str | os.PathLike[str],
+        X_column: str = "X_m",
+        b_column: str = "b_m",
+    ) -> PiecewiseLinearWidth:
+        """Read stations from a comma-separated file with a header row.
+
+        The file must contain columns ``X_column`` (reference heel-to-toe
+        position, metres) and ``b_column`` (effective width, metres); other
+        columns are ignored. Lines starting with ``#`` are comments. Rows
+        must already be sorted by strictly increasing ``X``; the file is not
+        reordered, so a mis-sorted file is reported rather than hidden.
+        """
+        name = os.fspath(path)
+        with open(path, newline="", encoding="utf-8") as fh:
+            rows = [
+                [cell.strip() for cell in row]
+                for row in csv.reader(fh)
+                if row
+                and any(c.strip() for c in row)
+                and not row[0].lstrip().startswith("#")
+            ]
+        if not rows:
+            raise ValueError(f"width CSV {name!r} has no header row")
+        header, body = rows[0], rows[1:]
+        missing = [c for c in (X_column, b_column) if c not in header]
+        if missing:
+            raise ValueError(
+                f"width CSV {name!r} lacks column(s) {missing}; found {header}"
+            )
+        iX, ib = header.index(X_column), header.index(b_column)
+        try:
+            X = [float(r[iX]) for r in body]
+            b = [float(r[ib]) for r in body]
+        except (IndexError, ValueError) as exc:
+            raise ValueError(
+                f"width CSV {name!r} has missing or non-numeric values"
+            ) from exc
+        return cls(X, b)
+
+    @property
+    def X_range(self) -> tuple[float, float]:
+        return (float(self.X_stations[0]), float(self.X_stations[-1]))
+
+    def _formula(self, X: Any) -> Any:
+        if not _is_ufl(X):
+            return np.interp(X, self.X_stations, self.b_stations)
+        import ufl
+
+        Xs, s = self.X_stations, self.slopes
+        expr = float(self.b_stations[0]) + float(s[0]) * (X - float(Xs[0]))
+        for i in range(1, s.size):
+            ds = float(s[i] - s[i - 1])
+            if ds != 0.0:
+                expr = expr + ds * ufl.max_value(X - float(Xs[i]), 0.0)
+        return expr
 
 
 def _is_ufl(X: Any) -> bool:

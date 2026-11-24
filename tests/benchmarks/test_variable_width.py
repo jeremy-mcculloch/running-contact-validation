@@ -17,7 +17,12 @@ from mpi4py import MPI
 
 from running_contact_validation.fe import plane_strain as ps
 from running_contact_validation.fe.variable_width import WidthField, assemble_total
-from running_contact_validation.fe.width import ConstantWidth, LinearWidth, WidthProfile
+from running_contact_validation.fe.width import (
+    ConstantWidth,
+    LinearWidth,
+    PiecewiseLinearWidth,
+    WidthProfile,
+)
 
 L, H = 0.28, 0.03  # m
 RHO0 = 220.0  # kg/m^3, illustrative foam density (not a material parameter choice)
@@ -155,3 +160,67 @@ def test_nonpositive_width_at_quadrature_point_is_rejected():
     domain = make_domain(mesh.CellType.triangle)
     with pytest.raises(ValueError, match="> 0"):
         WidthField(domain, QuadraticTestWidth(0.09, -1.5), degree=2)
+
+
+# --- Piecewise-linear measured-station width ----------------------------------
+
+STATIONS_X = np.array([0.0, 0.07, 0.14, 0.21, 0.28])
+STATIONS_B = np.array([0.075, 0.085, 0.070, 0.105, 0.095])
+
+
+def trapezoid_mass(X, b):
+    """Exact integral of the piecewise-linear interpolant over [0, L] x [0, H]."""
+    return RHO0 * H * float(np.sum(0.5 * (b[1:] + b[:-1]) * np.diff(X)))
+
+
+@pytest.mark.parametrize("cell_type", CELL_TYPES)
+@pytest.mark.parametrize("nx", [4, 8, 32])
+def test_piecewise_linear_mass_exact_on_station_aligned_mesh(cell_type, nx):
+    """Element edges at every station (nx multiple of 4): integrand is linear
+    per element, so degree-2 quadrature integrates it exactly."""
+    profile = PiecewiseLinearWidth(STATIONS_X, STATIONS_B)
+    field = WidthField(make_domain(cell_type, (nx, 3)), profile, degree=2)
+    expected = trapezoid_mass(STATIONS_X, STATIONS_B)
+    assert field.total_mass(RHO0) == pytest.approx(expected, rel=RTOL)
+
+
+@pytest.mark.parametrize("cell_type", CELL_TYPES)
+def test_piecewise_linear_mass_converges_on_unaligned_mesh(cell_type):
+    """Kinks inside elements: quadrature error decreases under refinement."""
+    profile = PiecewiseLinearWidth(STATIONS_X, STATIONS_B)
+    expected = trapezoid_mass(STATIONS_X, STATIONS_B)
+    errors = [
+        abs(
+            WidthField(make_domain(cell_type, (nx, 2)), profile, 2).total_mass(RHO0)
+            - expected
+        )
+        for nx in (3, 9, 27, 81)
+    ]
+    assert errors[0] > 1e-8 * expected  # kinks really are inside elements
+    assert np.all(np.diff(errors) < 0)
+    assert errors[-1] < 1e-4 * expected
+
+
+@pytest.mark.parametrize("cell_type", CELL_TYPES)
+def test_piecewise_linear_ufl_form_matches_numpy_at_quadrature_points(cell_type):
+    profile = PiecewiseLinearWidth(STATIONS_X, STATIONS_B)
+    domain = make_domain(cell_type, (5, 2))  # unaligned with stations
+    field = WidthField(domain, profile, degree=3)
+    np.testing.assert_allclose(field.values, profile(field.points[..., 0]), rtol=1e-15)
+    b_ufl = profile(ufl.SpatialCoordinate(domain)[0])
+    symbolic = assemble_total(RHO0 * b_ufl * field.dx)
+    assert field.total_mass(RHO0) == pytest.approx(symbolic, rel=RTOL)
+
+
+def test_piecewise_linear_from_csv_mass(tmp_path):
+    path = tmp_path / "midsole_width.csv"
+    rows = "\n".join(
+        f"{float(x)!r},{float(b)!r}" for x, b in zip(STATIONS_X, STATIONS_B)
+    )
+    # Each rank writes its own private tmp_path; content is identical.
+    path.write_text("X_m,b_m\n" + rows + "\n", encoding="utf-8")
+    profile = PiecewiseLinearWidth.from_csv(path)
+    field = WidthField(make_domain(mesh.CellType.quadrilateral, (8, 3)), profile, 2)
+    assert field.total_mass(RHO0) == pytest.approx(
+        trapezoid_mass(STATIONS_X, STATIONS_B), rel=RTOL
+    )
