@@ -30,6 +30,8 @@ PARAMS = {
     "neg_alpha": HyperfoamParameters(mu=0.3e6, alpha=-3.0, beta=0.4),
     "neg_beta": HyperfoamParameters(mu=1.2e6, alpha=2.5, beta=-0.2),
     "stiff_alpha": HyperfoamParameters(mu=0.2e6, alpha=20.0, beta=0.05),
+    "frac_alpha": HyperfoamParameters(mu=0.6e6, alpha=1.37, beta=0.3),
+    "neg_frac_alpha": HyperfoamParameters(mu=0.4e6, alpha=-2.71, beta=0.08),
 }
 
 

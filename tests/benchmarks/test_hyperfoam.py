@@ -45,6 +45,8 @@ PARAMS = {
     "neg_alpha": HyperfoamParameters(mu=0.3e6, alpha=-3.0, beta=0.4),
     "neg_beta": HyperfoamParameters(mu=1.2e6, alpha=2.5, beta=-0.2),
     "stiff_alpha": HyperfoamParameters(mu=0.2e6, alpha=20.0, beta=0.05),
+    "frac_alpha": HyperfoamParameters(mu=0.6e6, alpha=1.37, beta=0.3),
+    "neg_frac_alpha": HyperfoamParameters(mu=0.4e6, alpha=-2.71, beta=0.08),
 }
 
 
@@ -91,13 +93,13 @@ def one_cell_domain():
 class ConstantF:
     """Evaluate UFL expressions of a constant 3x3 F (block structure) at one point."""
 
-    def __init__(self, params):
+    def __init__(self, params, method="series"):
         self.domain = one_cell_domain()
         self.Fc = fem.Constant(self.domain, np.eye(3))
         self.params = params
-        self.W = hf.strain_energy_density(self.Fc, params)
-        self.P = hf.first_piola_kirchhoff_stress(self.Fc, params)
-        self.A = hf.material_tangent(self.Fc, params)
+        self.W = hf.strain_energy_density(self.Fc, params, method)
+        self.P = hf.first_piola_kirchhoff_stress(self.Fc, params, method)
+        self.A = hf.material_tangent(self.Fc, params, method)
         pt = np.array([[1.0 / 3.0, 1.0 / 3.0]])
         self._exprs = {k: fem.Expression(getattr(self, k), pt) for k in ("W", "P", "A")}
 
@@ -109,15 +111,19 @@ class ConstantF:
 
 @pytest.fixture(scope="module")
 def evaluators():
-    return {k: ConstantF(p) for k, p in PARAMS.items()}
+    return {(k, m): ConstantF(p, m) for k, p in PARAMS.items() for m in hf.METHODS}
+
+
+METHODS = pytest.mark.parametrize("method", hf.METHODS)
 
 
 # ------------------------------------------------ pointwise constitutive checks
 
 
+@METHODS
 @pytest.mark.parametrize("name", list(PARAMS))
-def test_reference_state(evaluators, name):
-    ev = evaluators[name]
+def test_reference_state(evaluators, method, name):
+    ev = evaluators[name, method]
     assert abs(float(ev("W", np.eye(3)))) < 1e-9
     np.testing.assert_allclose(ev("P", np.eye(3)), 0.0, atol=1e-9)
     # tangent at reference = linear isotropic elasticity with lambda0 = 2 mu beta
@@ -135,10 +141,11 @@ def test_reference_state(evaluators, name):
             assert A[i, j, k, l] == pytest.approx(A_lin[i, j, k, l], abs=1e-8 * p.mu)
 
 
+@METHODS
 @pytest.mark.parametrize("name", list(PARAMS))
 @pytest.mark.parametrize("state", list(STATES))
-def test_ufl_energy_and_stress_match_numpy(evaluators, name, state):
-    ev, p = evaluators[name], PARAMS[name]
+def test_ufl_energy_and_stress_match_numpy(evaluators, method, name, state):
+    ev, p = evaluators[name, method], PARAMS[name]
     F = embed(STATES[state])
     W_ref = nph.strain_energy_density(F, p)
     assert float(ev("W", F)) == pytest.approx(W_ref, rel=1e-11, abs=1e-12 * p.mu)
@@ -147,11 +154,12 @@ def test_ufl_energy_and_stress_match_numpy(evaluators, name, state):
     np.testing.assert_allclose(ev("P", F), P_ref, atol=1e-10 * scale + 1e-12 * p.mu)
 
 
+@METHODS
 @pytest.mark.parametrize("name", list(PARAMS))
 @pytest.mark.parametrize("state", list(STATES))
-def test_ufl_stress_matches_fd_of_energy(evaluators, name, state):
+def test_ufl_stress_matches_fd_of_energy(evaluators, method, name, state):
     """P = dW/dF against central differences of the UFL and NumPy energies."""
-    ev, p = evaluators[name], PARAMS[name]
+    ev, p = evaluators[name, method], PARAMS[name]
     F = embed(STATES[state])
     P = ev("P", F)
     h = 1e-6
@@ -170,12 +178,13 @@ def test_ufl_stress_matches_fd_of_energy(evaluators, name, state):
         assert abs(P[i, j]) < 1e-12 * scale
 
 
+@METHODS
 @pytest.mark.parametrize("name", list(PARAMS))
 @pytest.mark.parametrize("state", list(STATES))
-def test_ufl_tangent_matches_fd_of_stress(evaluators, name, state):
+def test_ufl_tangent_matches_fd_of_stress(evaluators, method, name, state):
     """A = dP/dF (UFL AD) against central differences of the independent NumPy
     stress and of the UFL stress, over all plane-strain components."""
-    ev, p = evaluators[name], PARAMS[name]
+    ev, p = evaluators[name, method], PARAMS[name]
     F = embed(STATES[state])
     A = ev("A", F)
     h = 1e-6
@@ -206,10 +215,11 @@ def test_ufl_tangent_matches_fd_of_stress(evaluators, name, state):
     np.testing.assert_allclose(Ab, Ab.T, atol=1e-10 * scale)
 
 
+@METHODS
 @pytest.mark.parametrize("name", ["foam_a", "neg_alpha", "stiff_alpha"])
-def test_stretch_series_switch_is_continuous(evaluators, name):
+def test_stretch_series_switch_is_continuous(evaluators, method, name):
     """W, P and A are continuous across r = D/s^2 = 1e-3 (series <-> closed form)."""
-    ev, p = evaluators[name], PARAMS[name]
+    ev, p = evaluators[name, method], PARAMS[name]
     for r in [0.999e-3, 1.0e-3, 1.001e-3]:
         F = embed(_near_iso(r) + np.diag([-0.3, -0.3]))
         assert float(ev("W", F)) == pytest.approx(
@@ -247,11 +257,12 @@ def test_beta_zero_limit_continuous_in_ufl(alpha):
     assert W1 == pytest.approx(W0, rel=1e-7)
 
 
+@METHODS
 @pytest.mark.parametrize("name", list(PARAMS))
 @pytest.mark.parametrize("state", ["compress_shear", "extend_1.6", "shear_0.8"])
-def test_frame_indifference_ufl(evaluators, name, state):
+def test_frame_indifference_ufl(evaluators, method, name, state):
     """In-plane superposed rotations Q (sagittal plane): W(QF) = W(F), P(QF) = Q P(F)."""
-    ev, p = evaluators[name], PARAMS[name]
+    ev, p = evaluators[name, method], PARAMS[name]
     F = embed(STATES[state])
     W, P = float(ev("W", F)), ev("P", F)
     for theta in [0.4, math.pi / 2, 2.8]:
@@ -263,25 +274,27 @@ def test_frame_indifference_ufl(evaluators, name, state):
         )
 
 
-def test_plane_strain_transverse_stress_nonzero(evaluators):
+@METHODS
+def test_plane_strain_transverse_stress_nonzero(evaluators, method):
     p = PARAMS["foam_a"]
     lam = 0.4
     F = embed(np.diag([lam - 1, 0.0]))
-    P = evaluators["foam_a"]("P", F)
+    P = evaluators["foam_a", method]("P", F)
     expected = 2 * p.mu / p.alpha * (1 - lam ** (-p.alpha * p.beta))
     assert P[2, 2] == pytest.approx(expected, rel=1e-12)
     assert P[2, 2] < -0.1 * p.mu
 
 
+@METHODS
 @pytest.mark.parametrize(
     "state, lam_range",
     [("uniaxial", (0.2, 2.0)), ("shear", (0.0, 1.5))],
 )
-def test_strong_ellipticity_over_documented_range(evaluators, state, lam_range):
+def test_strong_ellipticity_over_documented_range(evaluators, method, state, lam_range):
     """Diagnostic for the documented deformation range of the synthetic 'foam_a'
     set: the in-plane acoustic tensor Q_ik = A_iJkL N_J N_L is positive definite
     for all sampled directions N. Not a guarantee for other parameter sets."""
-    ev = evaluators["foam_a"]
+    ev = evaluators["foam_a", method]
     thetas = np.linspace(0, np.pi, 37)
     for t in np.linspace(*lam_range, 25):
         H2 = (
@@ -339,15 +352,18 @@ def test_homogeneous_energy_integral(cell_type):
     )
 
 
+@METHODS
 @pytest.mark.parametrize("cell_type", CELL_TYPES)
-def test_residual_energy_and_stress_forms_agree_and_match_fd(cell_type):
-    """R = d Pi/du (AD) equals int b P:dF(v); both match FD of the assembled energy;
-    K = dR/du matches FD of the assembled residual."""
+@pytest.mark.parametrize("name", ["foam_a", "neg_frac_alpha"])
+def test_residual_energy_and_stress_forms_agree_and_match_fd(cell_type, method, name):
+    """R = d Pi/du (AD of the series energy) equals the stress residual
+    int b P:dF(v) of ``method``; both match FD of the assembled energy; the
+    ``method`` Jacobian matches FD of its residual and the AD (series) Jacobian."""
     if MPI.COMM_WORLD.size > 1:
         pytest.skip("matrix-vector FD check written for serial runs")
     domain = make_domain(cell_type, n=(6, 2))
     width = WidthField(domain, LinearWidth(0.0, 0.07, L, 0.11), QDEG)
-    materials = FoamMaterialMap({0: PARAMS["foam_a"]})
+    materials = FoamMaterialMap({0: PARAMS[name]})
     V = fem.functionspace(domain, ("Lagrange", 2, (2,)))
     u = nonhomogeneous_u(V)
     jmin = hf.check_admissible_deformation(u, QDEG)
@@ -355,8 +371,11 @@ def test_residual_energy_and_stress_forms_agree_and_match_fd(cell_type):
     v, du = ufl.TestFunction(V), ufl.TrialFunction(V)
     Pi = hf.stored_energy(u, materials, width)
     R_form = fem.form(ufl.derivative(Pi, u, v))
-    R_alt_form = fem.form(hf.internal_virtual_work(u, v, materials, width))
-    K_form = fem.form(ufl.derivative(ufl.derivative(Pi, u, v), u, du))
+    R_alt_form = fem.form(
+        hf.internal_virtual_work(u, v, materials, width, method=method)
+    )
+    K_ad_form = fem.form(ufl.derivative(ufl.derivative(Pi, u, v), u, du))
+    K_form = fem.form(hf.tangent_form(u, du, v, materials, width, method=method))
 
     def assemble_R(form=R_form):
         b = fem.assemble_vector(form)
@@ -366,6 +385,7 @@ def test_residual_energy_and_stress_forms_agree_and_match_fd(cell_type):
     n_owned = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
     R = assemble_R()
     np.testing.assert_allclose(assemble_R(R_alt_form), R, atol=1e-10 * np.abs(R).max())
+    R = assemble_R(R_alt_form)
 
     # directional FD of energy along random perturbation w
     rng = np.random.default_rng(11)
@@ -394,16 +414,21 @@ def test_residual_energy_and_stress_forms_agree_and_match_fd(cell_type):
     Rp, Rm = [], []
     for sgn, store in ((+1, Rp), (-1, Rm)):
         set_u(u0[:n_owned] + sgn * h * w)
-        store.append(assemble_R())
+        store.append(assemble_R(R_alt_form))
     set_u(u0[:n_owned])
     Kw_fd = (Rp[0] - Rm[0]) / (2 * h)
     np.testing.assert_allclose(Kw, Kw_fd, atol=1e-6 * np.abs(Kw).max())
+    A_ad = fem.assemble_matrix(K_ad_form)
+    A_ad.scatter_reverse()
+    diff = (A_ad.to_scipy().tocsr() - Ad).toarray()
+    assert np.abs(diff).max() < 1e-10 * np.abs(Ad.toarray()).max()
 
 
+@METHODS
 @pytest.mark.parametrize("cell_type", CELL_TYPES)
-@pytest.mark.parametrize("name", ["foam_a", "neg_alpha", "beta_zero"])
+@pytest.mark.parametrize("name", ["foam_a", "neg_alpha", "beta_zero", "neg_frac_alpha"])
 @pytest.mark.parametrize("lam", [0.3, 0.7, 1.4])
-def test_newton_uniaxial_plane_strain_lateral_free(cell_type, name, lam):
+def test_newton_uniaxial_plane_strain_lateral_free(cell_type, name, lam, method):
     """Homogeneous FE solution with Newton on the AD tangent.
 
     BCs: u_x = 0 at X = 0, u_x = (lam - 1) L at X = L, u_y = 0 at Y = 0; top free.
@@ -435,13 +460,17 @@ def test_newton_uniaxial_plane_strain_lateral_free(cell_type, name, lam):
         fem.dirichletbc(ux_right, right, V.sub(0)),
         fem.dirichletbc(0.0, bottom, V.sub(1)),
     ]
-    Pi = hf.stored_energy(u, materials, width)
-    R = ufl.derivative(Pi, u, v)
+    # Newton starts at u = 0, i.e. exactly repeated stretches F = I
+    R = hf.internal_virtual_work(u, v, materials, width, method=method)
+    Jac = hf.tangent_form(u, ufl.TrialFunction(V), v, materials, width, method=method)
     problem = NonlinearProblem(
         R,
         u,
         bcs=bcs,
-        petsc_options_prefix=f"fe02_{name}_{cell_type.name}_{str(lam).replace('.', '_')}_",
+        J=Jac,
+        petsc_options_prefix=(
+            f"fe02_{method}_{name}_{cell_type.name}_{str(lam).replace('.', '_')}_"
+        ),
         petsc_options={
             "snes_type": "newtonls",
             "snes_linesearch_type": "basic",
@@ -494,7 +523,7 @@ def test_newton_uniaxial_plane_strain_lateral_free(cell_type, name, lam):
         nph.first_piola_kirchhoff_stress(F_ex, p)[0, 0], P11, rtol=1e-12
     )
     print(
-        f"[FE-02 Newton] {name} {cell_type.name} lam={lam}: P2, mesh 8x2, qdeg={QDEG}, "
+        f"[FE-02 Newton] {method} {name} {cell_type.name} lam={lam}: P2, mesh 8x2, qdeg={QDEG}, "
         f"{n_steps} load steps, Newton its/step={its}, runtime {runtime:.2f}s, "
         f"P11={P11:.6e} Pa, P33={P33:.6e} Pa"
     )

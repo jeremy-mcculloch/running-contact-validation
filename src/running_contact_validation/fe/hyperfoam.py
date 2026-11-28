@@ -66,6 +66,7 @@ __all__ = [
     "cauchy_stress",
     "check_admissible_jacobian",
     "first_piola_kirchhoff_stress",
+    "inplane_stretch_sum_coefficients",
     "principal_stretches",
     "second_piola_kirchhoff_stress",
     "strain_energy_density",
@@ -270,3 +271,45 @@ def cauchy_stress(F: npt.ArrayLike, params: HyperfoamParameters) -> FloatArray:
     J = check_admissible_jacobian(F)
     P = first_piola_kirchhoff_stress(F, params)
     return (P @ np.swapaxes(F, -1, -2)) / J[..., None, None]
+
+
+def inplane_stretch_sum_coefficients(
+    s: npt.ArrayLike, D: npt.ArrayLike, p: float
+) -> dict[str, FloatArray]:
+    """Divided-difference coefficients of ``g = q+^p + q-^p``, ``q+- = s +- sqrt(D)``.
+
+    NumPy reference for the ``divided_difference`` method of
+    :mod:`running_contact_validation.fe.hyperfoam_ufl` (which uses Kahan's
+    ``ln(u)/(u-1)`` and ``(w-1)/ln(w)`` instead of ``log1p``/``expm1``).
+    Returns ``g, g_s, g_D, g_ss, g_sD`` and ``K = g_DD * D = (g_ss - 2 g_D)/4``;
+    the divided differences ``(q+^m - q-^m)/(q+ - q-)`` are evaluated as
+    ``m q+^(m-1) * log1p(z)/z * expm1(m L)/(m L)`` with ``z = -2 sqrt(D)/q+``,
+    ``L = log1p(z)``. ``s`` and ``D`` are in units of ``C`` (dimensionless).
+    """
+    s = np.asarray(s, dtype=np.float64)
+    D = np.asarray(D, dtype=np.float64)
+    delta = np.sqrt(D)
+    qp, qm = s + delta, s - delta
+    z = -2.0 * delta / qp
+    L = np.log1p(z)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        lr = np.where(z == 0.0, 1.0, L / np.where(z == 0.0, 1.0, z))
+
+    def divdiff(m: float) -> FloatArray:
+        if m == 0.0:
+            return np.zeros_like(s)
+        y = m * L
+        with np.errstate(invalid="ignore", divide="ignore"):
+            er = np.where(y == 0.0, 1.0, np.expm1(y) / np.where(y == 0.0, 1.0, y))
+        return m * qp ** (m - 1.0) * lr * er
+
+    g_ss = p * (p - 1.0) * (qp ** (p - 2.0) + qm ** (p - 2.0))
+    g_D = p * divdiff(p - 1.0)
+    return {
+        "g": qp**p + qm**p,
+        "g_s": p * (qp ** (p - 1.0) + qm ** (p - 1.0)),
+        "g_D": g_D,
+        "g_ss": g_ss,
+        "g_sD": p * (p - 1.0) * divdiff(p - 2.0),
+        "K": 0.25 * g_ss - 0.5 * g_D,
+    }

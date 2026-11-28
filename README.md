@@ -84,6 +84,7 @@ These are the versions printed by `scripts/report_fe_versions.py`, which the "Re
 - `beta = 0` is evaluated through the continuous limit `-alpha ln J`.
 - Plane strain: the full 3D energy is evaluated on the embedded `F` with `F33 = 1`, so the transverse stress `P33` is retained (generally nonzero). The UFL functions require this block structure.
 - `P = dW/dF` and the tangent come from UFL automatic differentiation; the residual and Jacobian are derivatives of `Pi = sum_r int b(X) W_r dA` (`stored_energy`), with parameters per foam-region cell tag (`FoamMaterialMap`).
+- Repeated in-plane stretches (e.g. `F = I`): two evaluations, selected by `method=`. `"series"` (default) uses an exact even series in `D/s^2` below `1e-3` plus UFL AD. `"divided_difference"` has no series and no threshold: it builds the stress and tangent explicitly from cancellation-free divided differences (Kahan's `ln(u)/(u-1)` and `(w-1)/ln(w)`). With it, use `internal_virtual_work` and `tangent_form`, not `ufl.derivative` of the energy.
 - Call `check_admissible_deformation(u, degree)` before assembling: `J <= 0` raises `InadmissibleDeformationError`.
 
 No viscous stress yet (FE-03). Coefficients in tests are synthetic and illustrative.
