@@ -72,3 +72,19 @@ GitHub Actions (`.github/workflows/tests.yml`) runs the same build, version repo
 | NumPy (container) | 2.4.6 |
 
 These are the versions printed by `scripts/report_fe_versions.py`, which the "Report FE versions" CI step also runs. To change the image, update the digest in `Dockerfile`, re-run the FE tests, and update this table.
+
+## FE constitutive model: one-term hyperfoam (FE-02)
+
+`fe/hyperfoam.py` (NumPy reference, no FEniCSx) and `fe/hyperfoam_ufl.py` (UFL) implement the approved one-term compressible Ogden/Storakers hyperfoam of `docs/scientific_specification.md` Section 24.2 (Abaqus convention, full principal stretches):
+
+    W = (2 mu/alpha^2) [ l1^alpha + l2^alpha + l3^alpha - 3 + (J^(-alpha beta) - 1)/beta ],   J > 0
+
+- Units: `mu` [Pa] (initial shear modulus), `alpha` [-], `beta` [-]; `W` in J/m^3 of reference volume. Small-strain bulk modulus `K0 = 2 mu (beta + 1/3)`, `lambda0 = 2 mu beta`, `nu0 = beta/(1 + 2 beta)`.
+- Admissible parameters (checked by `HyperfoamParameters`): finite, `mu > 0`, `alpha != 0`, `beta > -1/3`. These are necessary small-strain conditions only; check stability over the strain range reached for each identified parameter set. For `beta < 0`, `W >= 0` is not guaranteed at finite strain.
+- `beta = 0` is evaluated through the continuous limit `-alpha ln J`.
+- Plane strain: the full 3D energy is evaluated on the embedded `F` with `F33 = 1`, so the transverse stress `P33` is retained (generally nonzero). The UFL functions require this block structure.
+- `P = dW/dF` and the tangent come from UFL automatic differentiation; the residual and Jacobian are derivatives of `Pi = sum_r int b(X) W_r dA` (`stored_energy`), with parameters per foam-region cell tag (`FoamMaterialMap`).
+- Repeated in-plane stretches (e.g. `F = I`): two evaluations, selected by `method=`. `"series"` (default) uses an exact even series in `D/s^2` below `1e-3` plus UFL AD. `"divided_difference"` has no series and no threshold: it builds the stress and tangent explicitly from cancellation-free divided differences (Kahan's `ln(u)/(u-1)` and `(w-1)/ln(w)`). With it, use `internal_virtual_work` and `tangent_form`, not `ufl.derivative` of the energy.
+- Call `check_admissible_deformation(u, degree)` before assembling: `J <= 0` raises `InadmissibleDeformationError`.
+
+No viscous stress yet (FE-03). Coefficients in tests are synthetic and illustrative.
