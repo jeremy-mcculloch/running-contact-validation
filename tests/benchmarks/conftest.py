@@ -25,6 +25,4 @@ if not _HAVE_DOLFINX:
 def pytest_report_header(config):
     if _HAVE_DOLFINX:
         return None
-    return (
-        "FEniCSx benchmarks not collected: dolfinx not installed (use docker compose)"
-    )
+    return "FEniCSx benchmarks not collected: dolfinx not installed (use docker compose)"
